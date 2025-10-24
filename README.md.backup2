@@ -257,261 +257,38 @@ sub_bytes 함수에 INT3 (0xCC) 삽입:
 - 256바이트 패턴 매칭으로 S-box 테이블 찾기
 - S-box의 정확한 메모리 주소 출력
 
-### Phase 2: S-box 접근 감지 ✅ (v3)
-**하드웨어 Watchpoint 구현 완료\!**
+## 향후 추가할 기능
 
-- x86-64 디버그 레지스터 (DR0-DR7) 활용
-- S-box 메모리 영역에 읽기/쓰기 watchpoint 설정
-- 실시간 SIGTRAP으로 접근 감지
-- 레지스터 분석하여 S-box 인덱스 추정
-- 접근 통계 수집 및 분석
+### Phase 2: S-box 접근 감지 (계획중)
+다음 단계에서 구현할 기능들:
 
-**구현 상세:**
-```cpp
-// DR0에 S-box 주소 설정
-ptrace(PTRACE_POKEUSER, pid, offsetof(struct user, u_debugreg[0]), sbox_addr);
+1. **하드웨어 브레이크포인트 (Watchpoint)**
+   - x86-64 디버그 레지스터 (DR0-DR7) 사용
+   - S-box 메모리 영역에 읽기 watchpoint 설정
+   - 접근 시 SIGTRAP 발생 -> input/output 값 추출
+   - 4개 주소까지 동시 감시 가능 (DR0~DR3)
 
-// DR7로 읽기/쓰기 watchpoint 활성화
-unsigned long dr7 = DR7_LOCAL_ENABLE_0 | DR7_BREAK_ON_RW | DR7_LEN_1_BYTE;
-ptrace(PTRACE_POKEUSER, pid, offsetof(struct user, u_debugreg[7]), dr7);
+2. **함수 브레이크포인트**
+   - `sub_bytes` 함수 시작 주소에 INT3 (0xCC) 삽입
+   - 함수 진입/종료 시 레지스터 상태 캡처
+   - 스택 트레이스 추출
 
-// 접근 시 SIGTRAP 발생 → 분석
-```
+3. **통계 및 분석**
+   - S-box 접근 패턴 분석
+   - 접근 빈도 통계 (어떤 인덱스가 많이 사용되는지)
+   - 타이밍 정보 수집 (캐시 타이밍 공격 시뮬레이션)
 
-**테스트 결과:**
-```
-[1] S-box access detected\!
-    RIP: 0x6151e77595e3
-    rax points to S-box[0x0] = 0x63
-    rdi points to S-box[0x0] = 0x63
-```
-
-## 하드웨어 브레이크포인트 (Hardware Breakpoint) 상세
-
-### x86-64 디버그 레지스터 구조
-
-```
-┌─────────────────────────────────────────┐
-│  CPU 내부 디버그 레지스터 (8개 고정)    │
-├─────────────────────────────────────────┤
-│  DR0  │  Breakpoint Address #0          │  ← 주소 저장 (64비트)
-│  DR1  │  Breakpoint Address #1          │  ← 주소 저장 (64비트)
-│  DR2  │  Breakpoint Address #2          │  ← 주소 저장 (64비트)
-│  DR3  │  Breakpoint Address #3          │  ← 주소 저장 (64비트)
-├───────┼─────────────────────────────────┤
-│  DR4  │  (Reserved/Alias to DR6)        │  ← 사용 불가
-│  DR5  │  (Reserved/Alias to DR7)        │  ← 사용 불가
-├───────┼─────────────────────────────────┤
-│  DR6  │  Debug Status Register          │  ← 상태: 어떤 BP 히트?
-│  DR7  │  Debug Control Register         │  ← 제어: BP 활성화/타입
-└─────────────────────────────────────────┘
-```
-
-### 왜 하드웨어 브레이크포인트는 4개만 가능한가?
-
-**1. 물리적 제약**
-- Intel x86 아키텍처에 **CPU 레지스터가 물리적으로 8개만 내장**
-- DR0-DR3: 브레이크포인트 주소 저장 (4개)
-- DR4-DR5: 예약됨 (사용 불가)
-- DR6: 상태 레지스터 (어떤 BP가 히트되었는지)
-- DR7: 제어 레지스터 (BP 활성화 및 타입 설정)
-
-**2. 역사적 배경**
-```
-1985년 Intel 80386 설계 시 4개로 결정
-↓
-하위 호환성 유지를 위해 현재까지 계승
-↓
-x86-64 (AMD64, Intel 64)에도 동일하게 4개
-```
-
-**3. 칩 공간 절약**
-- 레지스터 추가 = 트랜지스터 증가 = 비용/전력 증가
-- 4개로 대부분의 디버깅 시나리오 커버 가능
-- 더 필요하면 소프트웨어 브레이크포인트 사용
-
-### DR6 레지스터 (상태)
-
-```
-DR6 비트 필드:
-  Bit 0 (B0): DR0 브레이크포인트 히트
-  Bit 1 (B1): DR1 브레이크포인트 히트
-  Bit 2 (B2): DR2 브레이크포인트 히트
-  Bit 3 (B3): DR3 브레이크포인트 히트
-  Bit 13 (BD): 디버그 레지스터 접근 감지
-  Bit 14 (BS): 싱글 스텝
-  Bit 15 (BT): 태스크 스위치
-
-예시:
-  DR6 = 0x00004001
-        ││││││││││││││││
-        │││││││││││││└─── B0: DR0 히트\!
-        ││││└──────────── BS: 싱글 스텝도 발생
-```
-
-### DR7 레지스터 (제어)
-
-```
-DR7 비트 필드 구조:
-
-Bits 0-7: 로컬/글로벌 활성화
-  L0 (bit 0): DR0 로컬 활성화
-  G0 (bit 1): DR0 글로벌 활성화
-  L1 (bit 2): DR1 로컬 활성화
-  ...
-
-Bits 16-31: 브레이크포인트 조건
-  R/W0 (bits 16-17): DR0 타입
-    00 = 실행
-    01 = 쓰기
-    11 = 읽기/쓰기
-  LEN0 (bits 18-19): DR0 크기
-    00 = 1바이트
-    01 = 2바이트
-    11 = 4바이트
-    10 = 8바이트
-
-예시:
-  DR7 = 0x00000155
-  
-  0x155 = 0b 0000 0001 0101 0101
-           │    │    │││└ L0=1 (DR0 활성화)
-           │    │    ││└─ G0=1 (DR0 글로벌)
-           │    │    │└── L1=1 (DR1 활성화)
-           │    │    └─── G1=1 (DR1 글로벌)
-           │    └──────── 모두 읽기/쓰기 (11)
-           └───────────── 모두 1바이트 (00)
-```
-
-### 브레이크포인트 타입 비교
-
-| 타입 | 개수 제한 | 속도 | 메모리 수정 | 코드/데이터 |
-|------|----------|------|-------------|-------------|
-| **하드웨어 BP** | **4개** | ⚡ 매우 빠름 | ❌ 불필요 | ✅ 둘 다 가능 |
-| **소프트웨어 BP** | 무제한 | 🐌 느림 | ⚠️ INT3 삽입 필요 | ✅ 코드만 |
-
-**하드웨어 BP 장점:**
-- CPU가 자동으로 감시 → 오버헤드 거의 없음
-- 메모리 수정 불필요 → 원본 코드/데이터 보존
-- 읽기/쓰기/실행 모두 감지 가능
-- **메모리 접근 추적에 최적** (S-box 같은 데이터)
-
-**하드웨어 BP 단점:**
-- 4개만 사용 가능
-- 구현이 복잡 (레지스터 직접 제어)
-
-### 4개 제약 극복 방법
-
-**1. 영역 분할 (우리 방식)**
-```cpp
-// 256바이트 S-box를 4등분
-DR0 = sbox + 0;    // S-box[0-63]
-DR1 = sbox + 64;   // S-box[64-127]
-DR2 = sbox + 128;  // S-box[128-191]
-DR3 = sbox + 192;  // S-box[192-255]
-```
-
-**2. 혼합 방식**
-```cpp
-// 중요한 4곳: 하드웨어 BP (빠름, 정확)
-DR0 = sub_bytes_addr;
-DR1 = shift_rows_addr;
-DR2 = mix_columns_addr;
-DR3 = add_round_key_addr;
-
-// 나머지: 소프트웨어 BP (INT3)
-set_soft_bp(expand_key_addr);
-set_soft_bp(xtime_addr);
-// ... 무제한
-```
-
-**3. 동적 재할당**
-```cpp
-// 실행 흐름에 따라 DR 재설정
-if (in_encryption_phase) {
-    // 암호화 중: S-box 감시
-    setup_sbox_watchpoints();
-} else if (in_key_expansion_phase) {
-    // 키 확장 중: 다른 메모리 감시
-    setup_key_watchpoints();
-}
-```
-
-### 다른 CPU 아키텍처 비교
-
-| CPU 아키텍처 | 하드웨어 BP 개수 | 비고 |
-|-------------|-----------------|------|
-| **x86/x64** | **4개** | 1985년부터 고정 |
-| ARM Cortex-A | 2-6개 | 모델에 따라 다름 |
-| ARM Cortex-M | 4-8개 | 임베디드용 |
-| ARMv8 (64-bit) | 2-16개 | 구현 의존 |
-| MIPS | 2개 | Watch Hi/Lo |
-| PowerPC | 1-2개 | DABR/IABR |
-| RISC-V | 구현 의존 | 명세에 없음 |
-
-**ARM이 더 많은 이유:**
-- 최신 설계 (2000년대)
-- 임베디드 디버깅 중시
-- 더 많은 트랜지스터 예산
-
-### Intel SDM 공식 명세
-
-```
-Intel® 64 and IA-32 Architectures Software Developer's Manual
-Volume 3B, Chapter 17: Debug, Branch Profile, TSC, and Resource Features
-
-"The processor provides four debug address registers (DR0-DR3), 
-each containing the linear address associated with one of four 
-breakpoint conditions."
-
-→ 공식적으로 4개로 제한됨
-```
-
-### 실제 사용 예시 (v3 디버거)
-
-```cpp
-// 1. DR0에 주소 설정
-ptrace(PTRACE_POKEUSER, child_pid,
-       offsetof(struct user, u_debugreg[0]), sbox_addr);
-
-// 2. DR7로 활성화 (읽기/쓰기 감지, 1바이트)
-unsigned long dr7 = 
-    (1 << 0) |  // L0: Local enable DR0
-    (3 << 16) | // R/W0: Break on read/write
-    (0 << 18);  // LEN0: 1 byte
-    
-ptrace(PTRACE_POKEUSER, child_pid,
-       offsetof(struct user, u_debugreg[7]), dr7);
-
-// 3. 프로세스 실행
-ptrace(PTRACE_CONT, child_pid, 0, 0);
-
-// 4. S-box 접근 시 SIGTRAP 발생\!
-waitpid(child_pid, &status, 0);
-
-// 5. DR6 확인 (어떤 BP가 히트되었는지)
-unsigned long dr6 = ptrace(PTRACE_PEEKUSER, child_pid,
-                           offsetof(struct user, u_debugreg[6]), 0);
-
-if (dr6 & 0x1) {
-    printf("DR0 breakpoint hit\!\n");
-}
-
-// 6. DR6 클리어 (다음 사용을 위해)
-ptrace(PTRACE_POKEUSER, child_pid,
-       offsetof(struct user, u_debugreg[6]), 0);
-```
+### Phase 3: 다른 암호 연산 지원 (계획중)
+- DES S-box (8개의 S-box, 각 64 엔트리)
+- RSA modular exponentiation 추적
+- ECC point operations 추적
 
 ## 프로젝트 구조
 
 ```
 .
-├── aes_sbox_debugger.cpp       # v1: 싱글 스텝 방식 (학습용)
-├── aes_sbox_debugger_v2.cpp    # v2: 메모리 스캔 (S-box 탐지)
-├── aes_sbox_debugger_v3.cpp    # v3: 하드웨어 Watchpoint (접근 감지) ⭐
-├── build/                      # 빌드 결과물
-│   ├── aes_sbox_debugger_v3    # 디버거 실행 파일
-│   └── aes256_test             # 테스트 프로그램
+├── aes_sbox_debugger.cpp       # v1: 싱글 스텝 방식 (느림)
+├── aes_sbox_debugger_v2.cpp    # v2: 메모리 스캔만 (현재 버전)
 ├── test/
 │   ├── CustomImpl/
 │   │   └── symmetric/
@@ -519,16 +296,10 @@ ptrace(PTRACE_POKEUSER, child_pid,
 │   └── openssl/
 │       └── symmetric/
 │           └── openssl_symmetric_aes_lib_test.cpp  # 참고용 (S-box 못 찾음)
-├── Makefile                    # 빌드 시스템
-├── README.md                   # 이 문서
-└── .gitignore                  # Git 설정
+├── Makefile
+├── README.md
+└── demo.sh
 ```
-
-**버전별 특징:**
-- **v1**: PTRACE_SINGLESTEP 사용, 느리지만 학습에 유용
-- **v2**: 메모리 스캔으로 S-box 위치 탐지
-- **v3**: 하드웨어 디버그 레지스터로 실제 접근 감지 (추천) ⭐
-
 
 ## 학습 목표
 
