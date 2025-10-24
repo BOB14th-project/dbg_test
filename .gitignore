@@ -1,0 +1,83 @@
+# 컴파일된 실행 파일
+aes_sbox_debugger
+aes_sbox_debugger_v2
+
+# 테스트 프로그램
+test/CustomImpl/symmetric/aes256_test
+test/openssl/symmetric/openssl_aes_test
+
+# 오브젝트 파일
+*.o
+*.obj
+*.a
+*.so
+*.dylib
+*.dll
+
+# 컴파일러 생성 파일
+*.out
+*.exe
+*.app
+
+# 디버그 파일
+*.dSYM/
+*.su
+*.idb
+*.pdb
+
+# 코어 덤프
+core
+core.*
+
+# 에디터/IDE 설정 파일
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# 백업 파일
+*.backup
+*.bak
+*.old
+README.md.backup
+
+# 빌드 디렉토리
+build/
+bin/
+obj/
+
+# 로그 파일
+*.log
+
+# 임시 파일
+tmp/
+temp/
+*.tmp
+
+# GDB 관련
+.gdb_history
+peda-session-*.txt
+
+# Valgrind 출력
+*.valgrind
+vgcore.*
+
+# 테스트 출력
+test_output/
+*.test
+
+# Python (테스트 스크립트용)
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+
+# 문서 생성 파일
+*.pdf
+docs/build/
+
+# 의존성 파일
+*.d
+.deps/
